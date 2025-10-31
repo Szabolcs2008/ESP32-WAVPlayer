@@ -1,0 +1,31 @@
+{
+    "$schema": "https://raw.githubusercontent.com/platformio/platformio-core/develop/platformio/assets/schema/library.json",
+    "name": "ESP32-WAVPlayer",
+    "version": "v0.1",
+    "descripttion": "A library to play WAV files on an ESP32 using PWM",
+    "keywords": ["audio", "audio player", "wav", "pwm"],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Szabolcs2008/ESP32-WAVPlayer.git"
+    },
+    "authors": {
+        "name": "Szabolcs Nagy",
+        "email": "",
+        "url": "",
+        "maintainer": true
+    },
+    "license": "MIT",
+    "frameworks": "arduino",
+    "platforms": "espressif32",
+    "headers": [
+        "WAVPlayer.h"
+    ],
+    "examples": [
+        {
+            "name": "Simple CLI",
+            "base": "examples/simple-cli",
+            "files": ["main.cpp"]
+        }
+    ],
+    "dependencies": []
+}
