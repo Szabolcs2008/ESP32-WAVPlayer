@@ -17,6 +17,8 @@ bool GUImode = false;
 bool stopped = true;
 bool paused = false;
 float soundVolume = 1.0f;
+bool initialized = false;
+
 
 uint32_t readUInt32(File& file) {
     unsigned long product = 0;
@@ -42,7 +44,10 @@ bool read_header(WavHeader& header_struct, File& file) {
     file.readBytes(header_struct.riff, 4);
     header_struct.fileSize = readUInt32(file);
     file.readBytes(header_struct.wave, 4);
-    if (memcmp(header_struct.riff, "RIFF", 4) != 0 || memcmp(header_struct.wave, "WAVE", 4) != 0) return false;
+    if (memcmp(header_struct.riff, "RIFF", 4) != 0 || memcmp(header_struct.wave, "WAVE", 4) != 0) {
+        ESP_LOGE(TAG, "WAV headers didn't match");
+        return false;
+    }
     file.readBytes(header_struct.fmtmarker, 4);
     header_struct.fmtLength = readUInt32(file);
     header_struct.fmtType = readUInt16(file);
@@ -55,7 +60,10 @@ bool read_header(WavHeader& header_struct, File& file) {
     char header[4] = {0, 0, 0, 0};
 
     while (true) {
-        if (file.readBytes(header, 4) != 4) return false;
+        if (file.readBytes(header, 4) != 4) {
+            ESP_LOGE(TAG, "Couldn't find data section.");
+            return false;
+        }
         uint32_t chunkSize = readUInt32(file);
 
         if (memcmp(header, "data", 4) == 0) {
@@ -70,6 +78,15 @@ bool read_header(WavHeader& header_struct, File& file) {
             }
         }
     }
+    return true;
+}
+
+bool WAVPlayer::begin(const int pwm_channel, const int output_pin, const int pwm_frequency = 75000, const int pwm_resolution = 8) {
+    if (initialized) return false;
+
+    ledcSetup(pwm_channel, pwm_frequency, pwm_resolution);
+    ledcAttachPin(output_pin, pwm_channel);
+
     return true;
 }
 

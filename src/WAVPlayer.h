@@ -34,6 +34,7 @@ typedef struct {
 bool read_header(WavHeader& header_struct, File& file);
 
 namespace WAVPlayer {
+    bool begin(const int pwm_channel, const int output_pin, const int pwm_frequency = 75000, const int pwm_resolution = 8);
     bool loop();
     bool play(String path, bool isGUI);
     bool stop();
