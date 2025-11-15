@@ -2,22 +2,34 @@
 #include <SD.h>
 #include "esp_log.h"
 
+static_assert(
+    (WAV_DATA_BUFFER_SIZE % 2 == 0), 
+    "Data buffer size must be a multiple of 2!"
+);
+
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 hw_timer_t *timer = NULL;
 File soundFile;
 WavHeader header;
 uint64_t filePosition = 0;
 volatile int bufferPosition = 0;
-uint8_t buffer0[DATA_BUFFER_SIZE];
-uint8_t buffer1[DATA_BUFFER_SIZE];
+uint8_t buffer0[WAV_DATA_BUFFER_SIZE];
+uint8_t buffer1[WAV_DATA_BUFFER_SIZE];
+
 volatile int refillInactiveBuffer = 0;
 uint8_t *activeBuffer = buffer0;
 uint8_t *inactiveBuffer = buffer1;
-bool GUImode = false;
+
+bool printProgress = false;
 bool stopped = true;
 bool paused = false;
 float soundVolume = 1.0f;
 bool initialized = false;
+
+int pwmChannel_A;
+int pwmChannel_B;
+
+bool isStereo = false;
 
 
 uint32_t readUInt32(File& file) {
@@ -81,14 +93,27 @@ bool read_header(WavHeader& header_struct, File& file) {
     return true;
 }
 
-bool WAVPlayer::begin(const int pwm_channel, const int output_pin, const int pwm_frequency = 75000, const int pwm_resolution = 8) {
+#ifdef WAVPLAYER_CAN_PLAY_STEREO
+bool WAVPlayer::begin(const int pwm_channel_l, const int pwm_channel_r, const int pin_l, const int pin_r, const int pwm_frequency, const int pwm_resolution) {
     if (initialized) return false;
+    pwmChannel_A = pwm_channel_l;
+    pwmChannel_B = pwm_channel_r;
 
-    ledcSetup(pwm_channel, pwm_frequency, pwm_resolution);
-    ledcAttachPin(output_pin, pwm_channel);
-
+    ledcSetup(pwmChannel_A, pwm_frequency, pwm_resolution);
+    ledcSetup(pwmChannel_B, pwm_frequency, pwm_resolution);
+    ledcAttachPin(pin_l, pwmChannel_A);
+    ledcAttachPin(pin_r, pwmChannel_B);
     return true;
 }
+#else
+bool WAVPlayer::begin(const int pwm_channel, const int pin, const int pwm_frequency, const int pwm_resolution) {
+    if (initialized) return false;
+    pwmChannel_A = pwm_channel;
+    ledcSetup(pwm_channel, pwm_frequency, pwm_resolution);
+    ledcAttachPin(pin_ch0, pwm_channel);
+    return true;
+}
+#endif
 
 bool WAVPlayer::stop() {
     if (!stopped) {
@@ -105,16 +130,30 @@ void player_isr() {
     portENTER_CRITICAL_ISR(&timerMux);
 
     if (paused) {
-        
-        // Do this every frame if the playback is paused
-
+        // Do literally nothing every frame if paused
         portEXIT_CRITICAL_ISR(&timerMux);
         return;
     }
-    uint8_t value = (uint8_t)std::max(std::min(((((float)activeBuffer[bufferPosition]-128.0f)*soundVolume)+128.0f), 255.0f), 0.0f);
-    ledcWrite(PWM_CHANNEL, value);
+
+    // Write byte to output
+    uint8_t valueA = (uint8_t)std::max(std::min(((((float)activeBuffer[bufferPosition]-128.0f)*soundVolume)+128.0f), 255.0f), 0.0f);
+    ledcWrite(pwmChannel_A, valueA);
+
+    // Write channel 2 if stereo playback is enabled
+    #ifdef WAVPLAYER_CAN_PLAY_STEREO
+    uint8_t valueB;
+    if (isStereo) {
+        valueB = (uint8_t)std::max(std::min(((((float)activeBuffer[bufferPosition+1]-128.0f)*soundVolume)+128.0f), 255.0f), 0.0f);
+    } else {
+        valueB = valueA;
+    }
+    ledcWrite(pwmChannel_B, valueB);
+    #endif
+
     bufferPosition++;
-    if (bufferPosition >= DATA_BUFFER_SIZE) {
+    if (isStereo) bufferPosition++;
+
+    if (bufferPosition >= WAV_DATA_BUFFER_SIZE) {
         bufferPosition = 0;
         uint8_t *tmp = activeBuffer;
         
@@ -137,17 +176,21 @@ bool WAVPlayer::loop() {
             // DPRINTLN("File handle is invalid. Something went horribly wrong.");
             WAVPlayer::stop();
         }
-        if (GUImode) {
-            Serial.printf("File position: %d/%d (%.02fs)\r", soundFile.position(), soundFile.size(), ((float)(soundFile.position()-header.dataStartOffset)/(float)header.sampleRate));
+
+        if (printProgress) {
+            Serial.printf("File position: %d/%d (%.02fs)\r\n", soundFile.position(), soundFile.size(), ((float)(soundFile.position()-header.dataStartOffset)/(float)header.sampleRate));
         }
+
         if (soundFile.position() != filePosition) {
             soundFile.seek(filePosition);
         }
+
         if (!soundFile.available() || soundFile.position() > soundFile.size()) {
             WAVPlayer::stop();
         }
-        soundFile.read(inactiveBuffer, DATA_BUFFER_SIZE);
-        filePosition += DATA_BUFFER_SIZE;
+
+        soundFile.read(inactiveBuffer, WAV_DATA_BUFFER_SIZE);
+        filePosition += WAV_DATA_BUFFER_SIZE;
 
         portENTER_CRITICAL(&timerMux);
         refillInactiveBuffer = 0;
@@ -168,11 +211,11 @@ void setup_timer(uint32_t sampleRate) {
     ESP_LOGI(TAG, "Timers set up.");
 }
 
-bool WAVPlayer::play(String path, bool isGUI) {
+bool WAVPlayer::play(String path, const bool print_progress) {
     if (!stopped) {
         WAVPlayer::stop();
     }
-    GUImode = isGUI;
+    printProgress = print_progress;
     #ifdef VERBOSE
     Serial.println("Setting up...");
     Serial.println("File is "+path);
@@ -194,11 +237,28 @@ bool WAVPlayer::play(String path, bool isGUI) {
     }
     
     bool shouldExit = false;
-    if (header.bitsPerSample != 8 || header.fmtType != 1 || header.channelCount != 1) {
-        ESP_LOGE(TAG, "I can't play this file (Unsupported format). Only mono unsigned 8 bit PCM is supported");
+    if (header.bitsPerSample != 8 || header.fmtType != 1) {
+        ESP_LOGE(TAG, "I can't play this file (Unsupported format). Only unsigned 8 bit PCM is supported");
         shouldExit = true;
     }
+
     
+    #ifdef WAVPLAYER_CAN_PLAY_STEREO
+    if (header.channelCount > 2) {
+        ESP_LOGE(TAG, "I can't play this file (Unsupported format). Only up to 2 channels are supported.");
+        shouldExit = true;
+    }
+    isStereo = (header.channelCount == 2);
+
+    #else
+    if (header.channelCount != 1) {
+        ESP_LOGE(TAG, "I can't play this file (Unsupported format). Only up to 1 channel is supported.");
+        shouldExit = true;
+    }
+
+    #endif
+    
+
     if (header.sampleRate < 8000 || header.sampleRate > 48000) {
         ESP_LOGE(TAG, "I can't play this file (Unsupported sample rate). Sample rates 8000Hz to 48000Hz are supported.");
         shouldExit = true;
@@ -208,7 +268,7 @@ bool WAVPlayer::play(String path, bool isGUI) {
         return false;
     }
 
-    for (size_t i = 0; i < DATA_BUFFER_SIZE; i++) {
+    for (size_t i = 0; i < WAV_DATA_BUFFER_SIZE; i++) {
         buffer0[i] = 0x80;
         buffer1[i] = 0x80;
     }

@@ -2,17 +2,13 @@
 #include <Arduino.h>
 #include <SD.h>
 
-
-
 // #define VERBOSE
+
+#define WAVPLAYER_CAN_PLAY_STEREO
 
 #define TAG "WAVPlayer"
 
-#define PWM_CHANNEL 0
-#define PWM_FREQ 75000
-#define PWM_RESOLUTION 8
-#define PWM_OUTPUT_PIN 2
-#define DATA_BUFFER_SIZE 4096
+#define WAV_DATA_BUFFER_SIZE 4096
 
 typedef struct {
     char riff[4];
@@ -34,9 +30,13 @@ typedef struct {
 bool read_header(WavHeader& header_struct, File& file);
 
 namespace WAVPlayer {
-    bool begin(const int pwm_channel, const int output_pin, const int pwm_frequency = 75000, const int pwm_resolution = 8);
+    #ifdef WAVPLAYER_CAN_PLAY_STEREO 
+        bool begin(const int pwm_channel_l, const int pwm_channel_r, const int pin_l, const int pin_r, const int pwm_frequency = 75000, const int pwm_resolution = 8);
+    #else
+        bool begin(const int pwm_channel, const int output_pin, const int pwm_frequency = 75000, const int pwm_resolution = 8);
+    #endif
     bool loop();
-    bool play(String path, bool isGUI);
+    bool play(String path, bool print_progress = false);
     bool stop();
     bool pause();
     bool unpause();
