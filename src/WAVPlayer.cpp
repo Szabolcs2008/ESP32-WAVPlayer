@@ -31,7 +31,6 @@ int pwmChannel_B;
 
 bool isStereo = false;
 
-
 uint32_t readUInt32(File& file) {
     unsigned long product = 0;
     for (int i = 0; i < 4; i++) {
@@ -110,7 +109,7 @@ bool WAVPlayer::begin(const int pwm_channel, const int pin, const int pwm_freque
     if (initialized) return false;
     pwmChannel_A = pwm_channel;
     ledcSetup(pwm_channel, pwm_frequency, pwm_resolution);
-    ledcAttachPin(pin_ch0, pwm_channel);
+    ledcAttachPin(pin, pwm_channel);
     return true;
 }
 #endif
@@ -166,37 +165,38 @@ void player_isr() {
     portEXIT_CRITICAL_ISR(&timerMux);
 }
 
-bool WAVPlayer::loop() {
-    
-    if (refillInactiveBuffer) {
-        // Serial.printf("Inactive buffer: %p\r\n", inactiveBuffer);
-        
-        if (!soundFile) {
-            ESP_LOGE(TAG, "The opened file is invalid.");
-            // DPRINTLN("File handle is invalid. Something went horribly wrong.");
-            WAVPlayer::stop();
+void playback_loop(void * pvParameters) {
+    while (!stopped) {
+        if (refillInactiveBuffer) {
+            // Serial.printf("Inactive buffer: %p\r\n", inactiveBuffer);
+            
+            if (!soundFile) {
+                ESP_LOGE(TAG, "The opened file is invalid.");
+                // DPRINTLN("File handle is invalid. Something went horribly wrong.");
+                WAVPlayer::stop();
+            }
+
+            if (printProgress) {
+                Serial.printf("File position: %d/%d (%.02fs)\r\n", soundFile.position(), soundFile.size(), ((float)(soundFile.position()-header.dataStartOffset)/(float)header.sampleRate));
+            }
+
+            if (soundFile.position() != filePosition) {
+                soundFile.seek(filePosition);
+            }
+
+            if (!soundFile.available() || soundFile.position() > soundFile.size()) {
+                WAVPlayer::stop();
+            }
+
+            soundFile.read(inactiveBuffer, WAV_DATA_BUFFER_SIZE);
+            filePosition += WAV_DATA_BUFFER_SIZE;
+
+            portENTER_CRITICAL(&timerMux);
+            refillInactiveBuffer = 0;
+            portEXIT_CRITICAL(&timerMux);
         }
-
-        if (printProgress) {
-            Serial.printf("File position: %d/%d (%.02fs)\r\n", soundFile.position(), soundFile.size(), ((float)(soundFile.position()-header.dataStartOffset)/(float)header.sampleRate));
-        }
-
-        if (soundFile.position() != filePosition) {
-            soundFile.seek(filePosition);
-        }
-
-        if (!soundFile.available() || soundFile.position() > soundFile.size()) {
-            WAVPlayer::stop();
-        }
-
-        soundFile.read(inactiveBuffer, WAV_DATA_BUFFER_SIZE);
-        filePosition += WAV_DATA_BUFFER_SIZE;
-
-        portENTER_CRITICAL(&timerMux);
-        refillInactiveBuffer = 0;
-        portEXIT_CRITICAL(&timerMux);
+        vTaskDelay(1 / portTICK_PERIOD_MS);
     }
-    return (!stopped);
 }
 
 void setup_timer(uint32_t sampleRate) {
@@ -280,7 +280,18 @@ bool WAVPlayer::play(String path, const bool print_progress) {
     stopped = false;
     paused = false;
     setup_timer(header.sampleRate);
+
+    xTaskCreate(
+        playback_loop,
+        "wavplayer-data",
+        WAVPLAYER_DATA_READER_STACK_SIZE,
+        NULL,
+        WAVPLAYER_DATA_READER_PRIORITY,
+        NULL
+    );
+
     return true;
+
 }
 
 bool WAVPlayer::pause() {
@@ -297,4 +308,8 @@ bool WAVPlayer::unpause() {
 
 void WAVPlayer::volume(uint8_t v) {
     soundVolume = v / 255.0f;
+}
+
+bool WAVPlayer::isBusy() {
+    return !stopped;
 }
